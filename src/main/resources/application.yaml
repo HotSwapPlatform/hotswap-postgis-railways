@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: HotSwapPostGISRailways
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+      - org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceInitializationAutoConfiguration
+
+server:
+  port: 8082
+
+hotswap:
+  postgres:
+    url: jdbc:postgresql://localhost:5432/hotswap
+    username: postgres
+    password: postgres

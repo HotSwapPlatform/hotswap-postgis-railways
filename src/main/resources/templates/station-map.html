@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HotSwap PostGIS Railways</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, sans-serif; background: #f8fafc; color: #1e293b; }
+        header { background: #1e3a5f; color: white; padding: 16px 24px; }
+        header h1 { font-size: 1.4rem; font-weight: 600; }
+        header p  { font-size: 0.85rem; opacity: 0.8; margin-top: 2px; }
+        main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+        .status-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+                      background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; }
+        .status-text { flex: 1; font-size: 0.9rem; color: #475569; }
+        .btn { padding: 8px 18px; background: #2563eb; color: white; border: none;
+               border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; }
+        .btn:hover { background: #1d4ed8; }
+        .btn:disabled { background: #94a3b8; cursor: default; }
+        #map { height: 560px; border-radius: 8px; border: 1px solid #e2e8f0;
+               display: none; background: #e8f4f8; }
+        .error { color: #dc2626; }
+        .spinner::before { content: "⏳ "; }
+        .attribution { margin-top: 10px; font-size: 0.8rem; color: #64748b; }
+        .btn--danger { background: #dc2626; margin-left: 8px; }
+        .btn--danger:hover { background: #b91c1c; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>HotSwap PostGIS Railways</h1>
+    <p>Suomen matkustajaliikenneasemien sijaintidata — Digitraffic API → PostgreSQL → Leaflet</p>
+</header>
+<main>
+    <div class="status-bar">
+        <span class="status-text" id="status-text">Tarkistetaan tilaa...</span>
+        <button class="btn" id="load-btn" onclick="startLoad()" style="display:none">
+            Lataa asematiedot
+        </button>
+        <button class="btn btn--danger" id="clear-btn" onclick="clearStations()" style="display:none">
+            Tyhjennä kanta
+        </button>
+    </div>
+    <div id="map"></div>
+    <p class="attribution">
+        Liikennetietojen lähde <a href="https://www.digitraffic.fi/" target="_blank" rel="noopener">Fintraffic / Digitraffic</a>,
+        <a href="https://creativecommons.org/licenses/by/4.0/deed.fi" target="_blank" rel="noopener">CC 4.0 BY</a>.
+    </p>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    let map = null;
+
+    async function checkStatus() {
+        try {
+            const res = await fetch('/api/stations/status');
+            const data = await res.json();
+            applyStatus(data);
+            return data.status;
+        } catch {
+            document.getElementById('status-text').textContent = '❌ Ei yhteyttä palvelimeen';
+            document.getElementById('status-text').className = 'status-text error';
+            return 'ERROR';
+        }
+    }
+
+    function applyStatus(data) {
+        const text     = document.getElementById('status-text');
+        const loadBtn  = document.getElementById('load-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        text.className = 'status-text';
+
+        if (data.status === 'LOADED') {
+            text.textContent = `✅ ${data.count} asemaa ladattu`;
+            loadBtn.style.display  = 'none';
+            clearBtn.style.display = 'block';
+            showMap();
+        } else if (data.status === 'LOADING') {
+            text.textContent = 'Ladataan asemia Digitrafficista...';
+            text.className = 'status-text spinner';
+            loadBtn.style.display  = 'none';
+            clearBtn.style.display = 'none';
+        } else if (data.status === 'ERROR') {
+            text.textContent = '❌ Lataus epäonnistui — tarkista PostgreSQL-yhteys';
+            text.className = 'status-text error';
+            loadBtn.style.display  = 'block';
+            clearBtn.style.display = 'none';
+        } else {
+            text.textContent = 'Asematietoja ei ole ladattu.';
+            loadBtn.style.display  = 'block';
+            clearBtn.style.display = 'none';
+        }
+    }
+
+    async function clearStations() {
+        document.getElementById('clear-btn').disabled = true;
+        await fetch('/api/stations', { method: 'DELETE' });
+        if (map) {
+            map.eachLayer(layer => { if (layer instanceof L.CircleMarker) map.removeLayer(layer); });
+        }
+        document.getElementById('map').style.display = 'none';
+        await checkStatus();
+        document.getElementById('clear-btn').disabled = false;
+    }
+
+    async function startLoad() {
+        document.getElementById('load-btn').disabled = true;
+        document.getElementById('status-text').textContent = 'Käynnistetään lataus...';
+        await fetch('/api/stations/load', { method: 'POST' });
+        poll();
+    }
+
+    function poll() {
+        const interval = setInterval(async () => {
+            const status = await checkStatus();
+            if (status === 'LOADED' || status === 'ERROR') {
+                clearInterval(interval);
+                document.getElementById('load-btn').disabled = false;
+            }
+        }, 2000);
+    }
+
+    async function showMap() {
+        const mapEl = document.getElementById('map');
+        mapEl.style.display = 'block';
+
+        if (!map) {
+            map = L.map('map').setView([65.0, 26.0], 5);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            }).addTo(map);
+        }
+
+        const stations = await fetch('/api/stations').then(r => r.json());
+        stations.forEach(s => {
+            L.circleMarker([s.latitude, s.longitude], {
+                radius: 5, color: '#1e3a5f', fillColor: '#2563eb', fillOpacity: 0.85, weight: 1
+            }).bindPopup(`<strong>${s.name}</strong><br><code>${s.shortCode}</code>`).addTo(map);
+        });
+    }
+
+    checkStatus();
+</script>
+</body>
+</html>

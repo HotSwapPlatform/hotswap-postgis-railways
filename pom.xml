@@ -41,6 +41,11 @@
             <scope>runtime</scope>
         </dependency>
         <dependency>
+            <groupId>io.github.ilkka-n</groupId>
+            <artifactId>hotswap-framework</artifactId>
+            <version>0.0.1-SNAPSHOT</version>
+        </dependency>
+        <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <optional>true</optional>

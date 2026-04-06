@@ -1,5 +1,7 @@
 package io.github.ilkka_n.hotswap.adapters.stations;
 
+import io.github.ilkka_n.hotswap.core.domain.Station;
+import io.github.ilkka_n.hotswap.core.ports.RailwayDataPort;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,7 +19,6 @@ import java.util.concurrent.atomic.AtomicReference;
 public class StationLoadService {
 
     private final PostgreSQLStationRepository stationRepository;
-    private final DigitrafficClient digitrafficClient;
 
     private final AtomicReference<StationLoadStatus> status =
             new AtomicReference<>(StationLoadStatus.NOT_LOADED);
@@ -30,37 +31,51 @@ public class StationLoadService {
             if (existingCount > 0) {
                 count.set(existingCount);
                 status.set(StationLoadStatus.LOADED);
-                log.info("Asematiedot löydetty PostgreSQL:sta: {} asemaa", existingCount);
+                log.info("Liikennepaikkatiedot löydetty PostgreSQL:sta: {} kpl", existingCount);
             }
         } catch (DataAccessException e) {
-            log.debug("Asematietojen tila: PostgreSQL ei saatavilla käynnistyksessä");
+            log.debug("PostgreSQL ei saatavilla käynnistyksessä");
         }
     }
 
     /**
-     * Käynnistää asematietojen latauksen asynkronisesti.
-     * Ei tee mitään jos lataus on jo käynnissä tai valmis.
+     * Lataa yhden adapterin asemat asynkronisesti.
+     * Poistaa ensin kyseisen adapterin vanhat tiedot kannasta.
      */
-    public void loadAsync() {
-        boolean started = status.compareAndSet(StationLoadStatus.NOT_LOADED, StationLoadStatus.LOADING)
-                || status.compareAndSet(StationLoadStatus.ERROR, StationLoadStatus.LOADING);
-        if (!started) {
-            log.debug("Asematietojen lataus jo käynnissä tai valmis, ohitetaan");
-            return;
-        }
-
+    public void loadAdapterAsync(String adapterName, RailwayDataPort adapter) {
+        status.set(StationLoadStatus.LOADING);
         CompletableFuture.runAsync(() -> {
             try {
-                List<Station> stations = digitrafficClient.fetchFinnishPassengerStations();
+                List<Station> stations = adapter.fetchStations().stream()
+                        .map(s -> new Station(s.shortCode(), s.name(), s.latitude(), s.longitude(), adapterName))
+                        .toList();
+                stationRepository.deleteBySource(adapterName);
                 stationRepository.saveAll(stations);
-                count.set(stations.size());
+                long total = stationRepository.count();
+                count.set(total);
                 status.set(StationLoadStatus.LOADED);
-                log.info("Asematiedot ladattu: {} asemaa", stations.size());
+                log.info("Adapteri '{}': ladattu {} liikennepaikkkaa (yhteensä {})", adapterName, stations.size(), total);
             } catch (Exception e) {
-                log.error("Asematietojen lataus epäonnistui: {}", e.getMessage());
+                log.error("Adapterin '{}' lataus epäonnistui: {}", adapterName, e.getMessage());
                 status.set(StationLoadStatus.ERROR);
             }
         });
+    }
+
+    /**
+     * Poistaa yhden adapterin asemat kannasta.
+     */
+    public void unloadAdapter(String adapterName) {
+        try {
+            stationRepository.deleteBySource(adapterName);
+            long total = stationRepository.count();
+            count.set(total);
+            if (total == 0) status.set(StationLoadStatus.NOT_LOADED);
+            else status.set(StationLoadStatus.LOADED);
+            log.info("Adapteri '{}' poistettu kannasta", adapterName);
+        } catch (DataAccessException e) {
+            log.error("Adapterin '{}' poisto epäonnistui: {}", adapterName, e.getMessage());
+        }
     }
 
     public StationStatusDTO getStatusDTO() {
@@ -71,13 +86,13 @@ public class StationLoadService {
         stationRepository.deleteAll();
         count.set(0);
         status.set(StationLoadStatus.NOT_LOADED);
-        log.info("Asematiedot tyhjennetty");
+        log.info("Kaikki liikennepaikkatiedot tyhjennetty");
     }
 
     public List<StationDTO> getAllStations() {
         try {
             return stationRepository.findAll().stream()
-                    .map(s -> new StationDTO(s.shortCode(), s.name(), s.latitude(), s.longitude()))
+                    .map(s -> new StationDTO(s.shortCode(), s.name(), s.latitude(), s.longitude(), s.source()))
                     .toList();
         } catch (DataAccessException e) {
             log.warn("Asemien haku epäonnistui: {}", e.getMessage());

@@ -1,5 +1,7 @@
 package io.github.ilkka_n.hotswap.adapters.stations;
 
+import io.github.ilkka_n.hotswap.core.domain.Station;
+import io.github.ilkka_n.hotswap.core.ports.RailwayDataPort;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -12,6 +14,8 @@ import java.util.concurrent.TimeUnit;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -21,13 +25,13 @@ class StationLoadServiceTest {
     private PostgreSQLStationRepository stationRepository;
 
     @Mock
-    private DigitrafficClient digitrafficClient;
+    private RailwayDataPort railwayDataPort;
 
     private StationLoadService service;
 
     @BeforeEach
     void setUp() {
-        service = new StationLoadService(stationRepository, digitrafficClient);
+        service = new StationLoadService(stationRepository);
     }
 
     @Test
@@ -66,40 +70,50 @@ class StationLoadServiceTest {
     }
 
     @Test
-    void loadAsyncSetsLoadedStatusAfterSuccess() {
+    void loadAdapterAsyncSetsLoadedStatusAfterSuccess() {
         List<Station> stations = List.of(
-                new Station("HKI", "Helsinki", 60.1719, 24.9414),
-                new Station("TPE", "Tampere", 61.4978, 23.7610));
-        when(digitrafficClient.fetchFinnishPassengerStations()).thenReturn(stations);
+                new Station("HKI", "Helsinki", 60.1719, 24.9414, "Passenger"),
+                new Station("TPE", "Tampere", 61.4978, 23.7610, "Passenger"));
+        when(railwayDataPort.fetchStations()).thenReturn(stations);
+        when(stationRepository.count()).thenReturn(2L);
 
-        service.loadAsync();
+        service.loadAdapterAsync("Passenger", railwayDataPort);
 
         await().atMost(3, TimeUnit.SECONDS).until(
                 () -> "LOADED".equals(service.getStatusDTO().status()));
 
-        assertEquals(2, service.getStatusDTO().count());
-        verify(stationRepository).saveAll(stations);
+        verify(stationRepository).deleteBySource("Passenger");
+        verify(stationRepository).saveAll(anyList());
     }
 
     @Test
-    void loadAsyncSetsErrorStatusOnFailure() {
-        when(digitrafficClient.fetchFinnishPassengerStations())
-                .thenThrow(new RuntimeException("Verkkovirhe"));
+    void loadAdapterAsyncSetsErrorStatusOnFailure() {
+        when(railwayDataPort.fetchStations()).thenThrow(new RuntimeException("Verkkovirhe"));
 
-        service.loadAsync();
+        service.loadAdapterAsync("Passenger", railwayDataPort);
 
         await().atMost(3, TimeUnit.SECONDS).until(
                 () -> "ERROR".equals(service.getStatusDTO().status()));
     }
 
     @Test
-    void loadAsyncIsIdempotentWhenAlreadyLoaded() {
-        when(stationRepository.count()).thenReturn(10L);
-        service.initStatusFromDatabase();
+    void unloadAdapterRemovesStationsFromSource() {
+        when(stationRepository.count()).thenReturn(0L);
 
-        service.loadAsync();
+        service.unloadAdapter("Passenger");
 
-        verify(digitrafficClient, never()).fetchFinnishPassengerStations();
+        verify(stationRepository).deleteBySource("Passenger");
+        assertEquals("NOT_LOADED", service.getStatusDTO().status());
+    }
+
+    @Test
+    void unloadAdapterKeepsLoadedStatusWhenOtherStationsRemain() {
+        when(stationRepository.count()).thenReturn(5L);
+
+        service.unloadAdapter("European");
+
+        verify(stationRepository).deleteBySource("European");
+        assertEquals("LOADED", service.getStatusDTO().status());
     }
 
     @Test
